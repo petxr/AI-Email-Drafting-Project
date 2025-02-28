@@ -9,10 +9,18 @@ app.use(express.json());
 app.use(cors());
 
 // Ensure environment variables are loaded
-if (!process.env.OPENAI_API_KEY || !process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-    console.error("Missing required environment variables. Check your .env file.");
-    process.exit(1);
-}
+const REQUIRED_ENV_VARS = ["OPENAI_API_KEY", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"];
+REQUIRED_ENV_VARS.forEach((envVar) => {
+    if (!process.env[envVar]) {
+        console.error(`❌ Missing required environment variable: ${envVar}. Check your .env file.`);
+        process.exit(1);
+    }
+});
+
+require('dotenv').config();
+console.log("✅ Supabase URL:", process.env.SUPABASE_URL);  // Debugging
+console.log("✅ Supabase Key Loaded:", !!process.env.SUPABASE_SERVICE_ROLE_KEY);
+
 
 // Supabase setup
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
@@ -20,11 +28,52 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 // OpenAI setup
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// API Route: Generate AI Email
+/**
+ * 🛠 API Route: Register a new user
+ */
+app.post('/api/auth/register', async (req, res) => {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: "Email and password are required" });
+
+    try {
+        const { user, error } = await supabase.auth.signUp({ email, password });
+
+        if (error) return res.status(400).json({ error: error.message });
+
+        res.status(201).json({ message: "User registered successfully", user });
+    } catch (err) {
+        console.error("Registration error:", err.message);
+        res.status(500).json({ error: "Server error during registration" });
+    }
+});
+
+/**
+ * 🔑 API Route: User Login
+ */
+app.post('/api/auth/login', async (req, res) => {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: "Email and password are required" });
+
+    try {
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+
+        if (error) return res.status(401).json({ error: "Invalid credentials" });
+
+        res.status(200).json({ token: data.session.access_token });
+    } catch (err) {
+        console.error("Login error:", err.message);
+        res.status(500).json({ error: "Server error during login" });
+    }
+});
+
+/**
+ * ✉️ API Route: Generate AI Email
+ */
 app.post('/api/generate', async (req, res) => {
     const { userId, emailType, clientName } = req.body;
 
     if (!userId || !emailType || !clientName) {
+        console.error("Request failed: Missing required fields:", { userId, emailType, clientName });
         return res.status(400).json({ error: "Missing required fields" });
     }
 
@@ -32,7 +81,7 @@ app.post('/api/generate', async (req, res) => {
         const prompt = `Write a professional ${emailType} email for a client named ${clientName}.`;
 
         const response = await openai.chat.completions.create({
-            model: "gpt-4o",  // Use "gpt-4o" or "gpt-3.5-turbo"
+            model: "gpt-4o",
             messages: [
                 { role: "system", content: "You are an AI email generator." },
                 { role: "user", content: prompt }
@@ -41,14 +90,16 @@ app.post('/api/generate', async (req, res) => {
         });
 
         // Ensure OpenAI response is valid
-        if (!response || !response.choices || response.choices.length === 0) {
-            throw new Error("Invalid response from OpenAI");
+        if (!response || !response.choices || response.choices.length === 0 || !response.choices[0].message) {
+            throw new Error("Invalid response from OpenAI API");
         }
 
         const generatedEmail = response.choices[0].message.content.trim();
 
         // Ensure userId is a valid UUID before inserting
-        if (!userId || userId.length !== 36) {
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (!uuidRegex.test(userId)) {
+            console.error("Invalid userId format:", userId);
             return res.status(400).json({ error: "Invalid userId format. Must be a UUID." });
         }
 
@@ -61,8 +112,6 @@ app.post('/api/generate', async (req, res) => {
             return res.status(500).json({ error: `Database Error: ${error.message}` });
         }
 
-        if (error) throw new Error(`Supabase Insert Error: ${error.message}`);
-
         res.json({ subject: `${emailType} Email`, body: generatedEmail });
     } catch (error) {
         console.error("Error generating email:", error.message);
@@ -70,6 +119,16 @@ app.post('/api/generate', async (req, res) => {
     }
 });
 
-// Start server
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+/**
+ * 🩺 Root health check endpoint
+ */
+app.get("/", (req, res) => {
+    res.status(200).send("✅ Server is running!");
+});
+
+// Only start the server if not in test mode
+if (process.env.NODE_ENV !== "test") {
+    app.listen(5000, () => console.log("🚀 Server running on port 5000"));
+}
+
+module.exports = app; // Export for Jest tests

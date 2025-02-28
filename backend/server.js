@@ -17,10 +17,8 @@ REQUIRED_ENV_VARS.forEach((envVar) => {
     }
 });
 
-require('dotenv').config();
 console.log("✅ Supabase URL:", process.env.SUPABASE_URL);  // Debugging
 console.log("✅ Supabase Key Loaded:", !!process.env.SUPABASE_SERVICE_ROLE_KEY);
-
 
 // Supabase setup
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
@@ -29,18 +27,18 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 /**
- * 🛠 API Route: Register a new user
+ * API Route: Register a new user
  */
 app.post('/api/auth/register', async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: "Email and password are required" });
 
     try {
-        const { user, error } = await supabase.auth.signUp({ email, password });
+        const { data, error } = await supabase.auth.signUp({ email, password });
 
         if (error) return res.status(400).json({ error: error.message });
 
-        res.status(201).json({ message: "User registered successfully", user });
+        res.status(201).json({ message: "User registered successfully", user: data.user });
     } catch (err) {
         console.error("Registration error:", err.message);
         res.status(500).json({ error: "Server error during registration" });
@@ -48,7 +46,7 @@ app.post('/api/auth/register', async (req, res) => {
 });
 
 /**
- * 🔑 API Route: User Login
+ * API Route: User Login
  */
 app.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
@@ -90,7 +88,7 @@ app.post('/api/generate', async (req, res) => {
         });
 
         // Ensure OpenAI response is valid
-        if (!response || !response.choices || response.choices.length === 0 || !response.choices[0].message) {
+        if (!response || !response.choices || response.choices.length === 0 || !response.choices[0]?.message?.content) {
             throw new Error("Invalid response from OpenAI API");
         }
 
@@ -120,7 +118,7 @@ app.post('/api/generate', async (req, res) => {
 });
 
 /**
- * 🩺 Root health check endpoint
+ * Root health check endpoint
  */
 app.get("/", (req, res) => {
     res.status(200).send("✅ Server is running!");
@@ -130,5 +128,26 @@ app.get("/", (req, res) => {
 if (process.env.NODE_ENV !== "test") {
     app.listen(5000, () => console.log("🚀 Server running on port 5000"));
 }
+
+/**
+ * Protected Route Example
+ */
+app.get('/api/protected-route', async (req, res) => {
+    const authHeader = req.headers.authorisation;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return res.status(401).json({ error: "Unauthorised: No token provided" });
+    }
+
+    const token = authHeader.split(" ")[1];
+
+    // Verify token with Supabase
+    const { data, error } = await supabase.auth.getUser(token);
+
+    if (error || !data.user) {
+        return res.status(401).json({ error: "Unauthorised: Invalid token" });
+    }
+
+    res.json({ message: "Access granted", user: data.user });
+});
 
 module.exports = app; // Export for Jest tests

@@ -17,9 +17,6 @@ REQUIRED_ENV_VARS.forEach((envVar) => {
     }
 });
 
-console.log("✅ Supabase URL:", process.env.SUPABASE_URL);  // Debugging
-console.log("✅ Supabase Key Loaded:", !!process.env.SUPABASE_SERVICE_ROLE_KEY);
-
 // Supabase setup
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
@@ -65,10 +62,10 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 /**
- * ✉️ API Route: Generate AI Email
+ * ✉️ API Route: Generate AI Email with context
  */
 app.post('/api/generate', async (req, res) => {
-    const { userId, emailType, clientName } = req.body;
+    const { userId, emailType, clientName, context } = req.body;
 
     if (!userId || !emailType || !clientName) {
         console.error("Request failed: Missing required fields:", { userId, emailType, clientName });
@@ -76,7 +73,23 @@ app.post('/api/generate', async (req, res) => {
     }
 
     try {
-        const prompt = `Write a professional ${emailType} email for a client named ${clientName}.`;
+        // Fetch past emails for the same client
+        const { data: pastEmails, error } = await supabase
+            .from("emails")
+            .select("body")
+            .eq("user_id", userId)
+            .eq("client_name", clientName)
+            .order("created_at", { ascending: false })
+            .limit(3);
+
+        const emailHistory = pastEmails?.map(e => e.body).join("\n\n") || "No previous emails found.";
+
+        // Updated prompt including context and past emails
+        const prompt = `Write a professional ${emailType} email for a client named ${clientName}.
+        Previous conversation history:
+        ${emailHistory}
+        Additional context:
+        ${context || "No additional details provided."}`;
 
         const response = await openai.chat.completions.create({
             model: "gpt-4o",
@@ -84,11 +97,10 @@ app.post('/api/generate', async (req, res) => {
                 { role: "system", content: "You are an AI email generator." },
                 { role: "user", content: prompt }
             ],
-            max_tokens: 200
+            max_tokens: 250
         });
 
-        // Ensure OpenAI response is valid
-        if (!response || !response.choices || response.choices.length === 0 || !response.choices[0]?.message?.content) {
+        if (!response.choices || response.choices.length === 0 || !response.choices[0]?.message?.content) {
             throw new Error("Invalid response from OpenAI API");
         }
 
@@ -101,13 +113,13 @@ app.post('/api/generate', async (req, res) => {
             return res.status(400).json({ error: "Invalid userId format. Must be a UUID." });
         }
 
-        const { data, error } = await supabase.from('emails').insert([
-            { user_id: userId, subject: `${emailType} Email`, body: generatedEmail, status: "pending_review" }
+        const { data, error: insertError } = await supabase.from('emails').insert([
+            { user_id: userId, client_name: clientName, subject: `${emailType} Email`, body: generatedEmail, status: "pending_review" }
         ]);
 
-        if (error) {
-            console.error("Supabase Insert Error:", error.message);
-            return res.status(500).json({ error: `Database Error: ${error.message}` });
+        if (insertError) {
+            console.error("Supabase Insert Error:", insertError.message);
+            return res.status(500).json({ error: `Database Error: ${insertError.message}` });
         }
 
         res.json({ subject: `${emailType} Email`, body: generatedEmail });
